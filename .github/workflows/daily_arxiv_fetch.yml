@@ -1,0 +1,47 @@
+name: Daily ArXiv cs.IR Paper Fetch
+
+on:
+  schedule:
+    # 每天 UTC 时间 02:00 运行（北京时间 10:00）
+    - cron: '0 2 * * *'
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  fetch-papers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('wordnet')"
+
+      - name: Run paper fetcher
+        env:
+          # DeepSeek API Key从GitHub Secrets中读取
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          python arxiv_fetcher.py
+
+      - name: Commit and push reports
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add summary/
+          git diff --staged --quiet || git commit -m "Update daily arxiv papers report [skip ci]"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

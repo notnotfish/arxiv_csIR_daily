@@ -1,0 +1,68 @@
+# arXiv论文抓取配置
+
+# Arxiv API配置
+arxiv:
+  base_url: "https://export.arxiv.org/api/query"
+  category: "cs.IR"
+  max_results: 200
+  # 日期范围会自动计算为最近30天
+
+# DeepSeek API配置
+deepseek:
+  api_key: "sk-6681ff74588a4d8f8f6f9d28c7d32b50"
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  # 可选的请求参数
+  temperature: 0.3
+  max_tokens: 2000
+
+# 关键词配置
+keywords:
+  # 工业界公司
+  company:
+    - taobao
+    - jingdong
+    - amazon
+    - shopee
+    - kuaishou
+    - facebook
+    - tencent
+    - airbnb
+    - wechat
+    - twitter
+    - spotify
+    - pinterest
+    - tiktok
+    - douyin
+    - xiaohongshu
+    - meituan
+  # 推荐系统技术
+  technical:
+    - retrieval
+    - ranking
+    - rerank
+    - recommendation
+    - uplift
+    - ctr
+    - cvr
+    - explore
+    - diversity
+    - serendipity
+    - cold-start
+    - ltv
+    - dau
+    - relevance
+    - advertising
+    - debias
+    - causal
+
+# 报告配置
+report:
+  top_n: 20  # 保留top N篇论文
+  max_authors: 4  # 最多显示的作者数量
+  output_dir: "summary"  # 报告输出目录
+
+# 匹配配置
+matching:
+  case_sensitive: false  # 是否区分大小写
+  use_lemmatization: true  # 是否使用词形还原处理单词变形
