@@ -1,13 +1,14 @@
 # ArXiv论文抓取工具依赖
+# 版本已锁定，确保依赖稳定性
 
 # YAML配置文件解析
-pyyaml>=6.0
+pyyaml==6.0.1
 
 # HTTP请求
-requests>=2.31.0
+requests==2.31.0
 
 # 自然语言处理（用于关键词词形还原）
-nltk>=3.8.1
+nltk==3.8.1
 
 # Markdown到HTML转换（用于GitHub Pages）
-markdown>=3.4.0
+markdown==3.5.2

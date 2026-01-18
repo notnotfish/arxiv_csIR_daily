@@ -72,3 +72,8 @@ report:
 matching:
   case_sensitive: false  # 是否区分大小写
   use_lemmatization: true  # 是否使用词形还原处理单词变形
+
+# 时区配置
+timezone:
+  offset_hours: 8  # UTC偏移小时数，上海时区为UTC+8
+  name: "Asia/Shanghai"  # 时区名称（用于显示）

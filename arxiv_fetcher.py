@@ -27,7 +27,52 @@ try:
 except ImportError:
     NLTK_AVAILABLE = False
 
-# 配置日志
+# 全局变量存储时区，供日志格式化器使用
+_APP_TIMEZONE = None
+
+
+class TimezoneFormatter(logging.Formatter):
+    """支持自定义时区的日志格式化器"""
+
+    def __init__(self, fmt=None, datefmt=None, tz=None):
+        super().__init__(fmt, datefmt)
+        self.tz = tz or timezone.utc
+
+    def formatTime(self, record, datefmt=None):
+        """覆盖formatTime方法以使用自定义时区"""
+        dt = datetime.fromtimestamp(record.created, tz=self.tz)
+        if datefmt:
+            return dt.strftime(datefmt)
+        else:
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def setup_logging(tz: timezone = None):
+    """配置日志系统，使用指定时区"""
+    if tz is None:
+        tz = timezone(timedelta(hours=8))  # 默认UTC+8
+
+    # 创建handler
+    handler = logging.StreamHandler()
+
+    # 创建自定义格式化器
+    formatter = TimezoneFormatter(
+        fmt='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        tz=tz
+    )
+    handler.setFormatter(formatter)
+
+    # 配置root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # 清除现有handlers
+    logger.handlers.clear()
+    logger.addHandler(handler)
+
+
+# 默认日志配置（稍后会被setup_logging覆盖）
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -72,6 +117,9 @@ class ArxivFetcher:
                     nltk.download('omw-1.4', quiet=True)  # 多语言WordNet
                 except Exception as e:
                     logger.warning(f"下载NLTK数据失败: {e}")
+
+        # 初始化时区
+        self.timezone = self._get_timezone()
 
     def _load_config(self, config_path: str) -> Dict:
         """加载配置文件，支持本地覆盖和环境变量替换"""
@@ -145,6 +193,12 @@ class ArxivFetcher:
 
         logger.info("配置验证通过")
 
+    def _get_timezone(self) -> timezone:
+        """从配置获取时区对象"""
+        tz_config = self.config.get('timezone', {})
+        offset_hours = tz_config.get('offset_hours', 8)  # 默认UTC+8
+        return timezone(timedelta(hours=offset_hours))
+
     def _get_keywords(self) -> List[str]:
         """获取所有关键词"""
         keywords = []
@@ -212,8 +266,8 @@ class ArxivFetcher:
 
     def fetch_papers(self) -> List[Dict]:
         """从ArXiv获取论文"""
-        # 计算最近30天的日期范围
-        end_date = datetime.now(timezone.utc)
+        # 计算最近30天的日期范围（使用配置的时区）
+        end_date = datetime.now(self.timezone)
         start_date = end_date - timedelta(days=30)
 
         # ArXiv API格式：YYYYMMDDHHMM
@@ -490,8 +544,9 @@ class DeepSeekAnalyzer:
 class ReportGenerator:
     """报告生成器"""
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, target_timezone: timezone):
         self.config = config
+        self.timezone = target_timezone
 
     def generate(self, analyzed_papers: List[Dict], run_time: datetime) -> str:
         """生成Markdown报告"""
@@ -531,8 +586,11 @@ class ReportGenerator:
             submitted_date = paper.get('submitted_date', '')
             if submitted_date:
                 try:
+                    # arXiv返回的是UTC时间，需要转换为配置的时区
                     dt = datetime.fromisoformat(submitted_date.replace('Z', '+00:00'))
-                    date_str = dt.strftime("%Y-%m-%d")
+                    # 转换为配置的时区
+                    dt = dt.astimezone(self.timezone)
+                    date_str = dt.strftime("%Y-%m-%d %H:%M")
                 except (ValueError, IndexError) as e:
                     logger.debug(f"日期解析失败: {submitted_date} - {e}")
                     date_str = submitted_date[:10] if len(submitted_date) >= 10 else submitted_date
@@ -1084,9 +1142,13 @@ def main():
         # 初始化
         fetcher = ArxivFetcher(args.config)
         analyzer = DeepSeekAnalyzer(fetcher.config)
-        reporter = ReportGenerator(fetcher.config)
+        reporter = ReportGenerator(fetcher.config, fetcher.timezone)
 
-        run_time = datetime.now(timezone.utc)
+        # 设置日志时区
+        setup_logging(fetcher.timezone)
+
+        # 使用配置的时区
+        run_time = datetime.now(fetcher.timezone)
 
         # 1. 获取论文
         papers = fetcher.fetch_papers()
