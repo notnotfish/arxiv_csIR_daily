@@ -343,7 +343,7 @@ class WebGenerator:
             <ellipse cx=%2250%22 cy=%2220%22 rx=%2215%22 ry=%2212%22 fill=%22%238B4513%22/>
         </svg>">'''
 
-        # 生成HTML（不使用f-string，避免CSS花括号转义问题）
+        # 生成HTML（使用普通字符串，不需要转义花括号）
         html_template = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -352,69 +352,69 @@ class WebGenerator:
     <title>ArXiv cs.IR 每日论文摘要</title>
     {duck_favicon}
     <style>
-        * {{
+        * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-        }}
+        }
 
-        body {{
+        body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             line-height: 1.6;
             color: #24292e;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 40px 20px;
-        }}
+        }
 
-        .container {{
+        .container {
             max-width: 800px;
             margin: 0 auto;
             background-color: #ffffff;
             padding: 40px;
             border-radius: 12px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }}
+        }
 
-        h1 {{
+        h1 {
             font-size: 2.5em;
             margin-bottom: 0.3em;
             color: #0366d6;
             text-align: center;
-        }}
+        }
 
-        .subtitle {{
+        .subtitle {
             text-align: center;
             color: #586069;
             margin-bottom: 2em;
             font-size: 1.1em;
-        }}
+        }
 
-        .section {{
+        .section {
             margin-top: 2em;
-        }}
+        }
 
-        .section h2 {{
+        .section h2 {
             font-size: 1.5em;
             margin-bottom: 1em;
             padding-bottom: 0.5em;
             border-bottom: 2px solid #eaecef;
             color: #0366d6;
-        }}
+        }
 
-        .latest-report {{
+        .latest-report {
             background-color: #f6f8fa;
             padding: 20px;
             border-radius: 8px;
             border-left: 4px solid #0366d6;
-        }}
+        }
 
-        .latest-report h3 {{
+        .latest-report h3 {
             margin-bottom: 0.5em;
             color: #0366d6;
-        }}
+        }
 
-        .report-link {{
+        .report-link {
             display: inline-block;
             margin-top: 10px;
             padding: 10px 20px;
@@ -423,76 +423,76 @@ class WebGenerator:
             text-decoration: none;
             border-radius: 6px;
             transition: background-color 0.3s;
-        }}
+        }
 
-        .report-link:hover {{
+        .report-link:hover {
             background-color: #0256c7;
-        }}
+        }
 
-        .report-list {{
+        .report-list {
             list-style: none;
-        }}
+        }
 
-        .report-list li {{
+        .report-list li {
             margin-bottom: 0.8em;
             padding: 12px;
             background-color: #f6f8fa;
             border-radius: 6px;
             transition: background-color 0.2s;
-        }}
+        }
 
-        .report-list li:hover {{
+        .report-list li:hover {
             background-color: #e1e4e8;
-        }}
+        }
 
-        .report-list a {{
+        .report-list a {
             color: #0366d6;
             text-decoration: none;
             font-weight: 500;
-        }}
+        }
 
-        .report-list a:hover {{
+        .report-list a:hover {
             text-decoration: underline;
-        }}
+        }
 
-        .no-reports {{
+        .no-reports {
             color: #586069;
             text-align: center;
             padding: 20px;
             font-style: italic;
-        }}
+        }
 
-        .footer {{
+        .footer {
             margin-top: 3em;
             padding-top: 1em;
             border-top: 1px solid #eaecef;
             text-align: center;
             color: #586069;
             font-size: 0.9em;
-        }}
+        }
 
-        .footer a {{
+        .footer a {
             color: #0366d6;
             text-decoration: none;
-        }}
+        }
 
-        .footer a:hover {{
+        .footer a:hover {
             text-decoration: underline;
-        }}
+        }
 
-        @media (max-width: 768px) {{
-            .container {{
+        @media (max-width: 768px) {
+            .container {
                 padding: 20px;
-            }}
+            }
 
-            h1 {{
+            h1 {
                 font-size: 2em;
-            }}
+            }
 
-            body {{
+            body {
                 padding: 20px 10px;
-            }}
-        }}
+            }
+        }
     </style>
 </head>
 <body>
