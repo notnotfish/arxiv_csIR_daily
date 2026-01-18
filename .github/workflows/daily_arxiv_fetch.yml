@@ -22,6 +22,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          # 自动缓存 pip 依赖
+          cache: 'pip'
+
+      - name: Cache NLTK data
+        uses: actions/cache@v4
+        with:
+          path: ~/nltk_data
+          key: nltk-data-${{ runner.os }}-wordnet
+          restore-keys: |
+            nltk-data-${{ runner.os }}-
 
       - name: Install dependencies
         run: |
@@ -30,7 +40,7 @@ jobs:
 
       - name: Download NLTK data
         run: |
-          python -c "import nltk; nltk.download('wordnet')"
+          python -c "import nltk; nltk.download('wordnet', quiet=True); nltk.download('omw-1.4', quiet=True)"
 
       - name: Run paper fetcher
         env:

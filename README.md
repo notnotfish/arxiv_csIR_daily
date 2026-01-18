@@ -30,16 +30,21 @@
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 配置 API Key（二选一）
-# 方式1: 设置环境变量（推荐）
-export DEEPSEEK_API_KEY='your-api-key-here'
+# 2. 配置 API Key（三选一）
+# 方式1: 命令行传入（最方便，推荐用于测试）
+python arxiv_fetcher.py --api-key sk-your-api-key-here
 
-# 方式2: 创建本地配置文件
+# 方式2: 设置环境变量
+export DEEPSEEK_API_KEY='your-api-key-here'
+python arxiv_fetcher.py
+
+# 方式3: 创建本地配置文件
 cp config.local.yaml.example config.local.yaml
 # 编辑 config.local.yaml 并填入你的 API Key
-
-# 3. 运行脚本
 python arxiv_fetcher.py
+
+# 查看所有命令行选项
+python arxiv_fetcher.py --help
 ```
 
 ### GitHub Actions 配置
@@ -55,18 +60,24 @@ python arxiv_fetcher.py
 
 ### 配置文件层级
 
-1. **config.yaml** - 主配置文件（提交到 Git）
-   - 包含默认配置
-   - API Key 使用环境变量占位符 `${DEEPSEEK_API_KEY}`
+API Key 配置优先级（从高到低）：
 
-2. **config.local.yaml** - 本地覆盖配置（不提交到 Git）
+1. **命令行参数** `--api-key`（最高优先级）
+   - 适用于临时测试和本地开发
+   - `python arxiv_fetcher.py --api-key sk-xxx`
+
+2. **环境变量** `DEEPSEEK_API_KEY`
+   - 适用于 CI/CD 和生产环境
+   - `export DEEPSEEK_API_KEY=sk-xxx`
+
+3. **config.local.yaml** - 本地覆盖配置（不提交到 Git）
    - 用于本地开发时覆盖默认配置
    - 可直接设置 API Key 或其他个性化配置
    - 参考 `config.local.yaml.example` 创建
 
-3. **环境变量** - 最高优先级
-   - `DEEPSEEK_API_KEY`: DeepSeek API 密钥
-   - 适用于 CI/CD 和生产环境
+4. **config.yaml** - 主配置文件（提交到 Git）
+   - 包含默认配置
+   - API Key 使用环境变量占位符 `${DEEPSEEK_API_KEY}`
 
 ### 可配置项
 

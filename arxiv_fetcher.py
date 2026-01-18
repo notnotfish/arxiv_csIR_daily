@@ -9,8 +9,9 @@ import yaml
 import json
 import time
 import logging
+import argparse
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -182,35 +183,36 @@ class ArxivFetcher:
         matched = []
 
         for keyword in keywords:
-            # 对关键词本身和其词形变化都进行匹配
-            normalized_keyword = self._normalize_word(keyword)
+            keyword_lower = keyword.lower()
 
-            # 构建更灵活的正则：匹配原词及其常见变形
-            # 例如：rank 会匹配 rank, ranks, ranking, ranked
-            variants = [
-                normalized_keyword,
-                normalized_keyword + 's',
-                normalized_keyword + 'ing',
-                normalized_keyword + 'ed',
-            ]
-
-            # 如果原关键词本身就包含词形变化，也加入匹配
-            if keyword.lower() != normalized_keyword:
-                variants.append(keyword.lower())
-
-            # 使用单词边界确保精确匹配
-            for variant in variants:
-                pattern = r'\b' + re.escape(variant) + r'\b'
+            # 如果启用词形还原，则对文本中的每个词进行还原后匹配
+            if self.lemmatizer and NLTK_AVAILABLE:
+                normalized_keyword = self._normalize_word(keyword_lower)
+                # 使用单词边界匹配原始关键词
+                pattern = r'\b' + re.escape(keyword_lower) + r'\b'
                 if re.search(pattern, content):
                     matched.append(keyword)
-                    break  # 找到一个变体就够了，避免重复
+                    continue
+
+                # 在文本中查找可能匹配的词（通过词形还原）
+                # 提取文本中的所有单词
+                words_in_text = re.findall(r'\b\w+\b', content)
+                for word in words_in_text:
+                    if self._normalize_word(word) == normalized_keyword:
+                        matched.append(keyword)
+                        break
+            else:
+                # 不使用词形还原，直接精确匹配
+                pattern = r'\b' + re.escape(keyword_lower) + r'\b'
+                if re.search(pattern, content):
+                    matched.append(keyword)
 
         return matched
 
     def fetch_papers(self) -> List[Dict]:
         """从ArXiv获取论文"""
         # 计算最近30天的日期范围
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=30)
 
         # ArXiv API格式：YYYYMMDDHHMM
@@ -234,7 +236,11 @@ class ArxivFetcher:
         logger.info(f"正在从ArXiv获取论文...")
         logger.info(f"时间范围: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
 
-        response = requests.get(url, timeout=30)
+        # arXiv API 要求设置 User-Agent
+        headers = {
+            'User-Agent': 'ArxivBot/1.0 (mailto:your-email@example.com)'
+        }
+        response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
 
         return self._parse_arxiv_response(response.text)
@@ -340,13 +346,21 @@ class DeepSeekAnalyzer:
         except json.JSONDecodeError:
             pass
 
-        # 尝试提取JSON对象（查找最外层的花括号）
-        match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                pass
+        # 尝试提取JSON对象（使用栈匹配括号，支持任意嵌套）
+        brace_count = 0
+        start_idx = -1
+        for i, char in enumerate(text):
+            if char == '{':
+                if brace_count == 0:
+                    start_idx = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_idx != -1:
+                    try:
+                        return json.loads(text[start_idx:i+1])
+                    except json.JSONDecodeError:
+                        pass
 
         # 如果都失败了，抛出异常
         raise ValueError(f"无法从文本中提取有效的JSON: {text[:100]}...")
@@ -404,7 +418,8 @@ class DeepSeekAnalyzer:
             f"{self.base_url}/chat/completions",
             headers={
                 "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "User-Agent": "ArxivBot/1.0"
             },
             json={
                 "model": self.model,
@@ -443,8 +458,6 @@ class DeepSeekAnalyzer:
 
     def analyze_papers_concurrent(self, papers: List[Dict], keywords: List[str], max_workers: int = 5) -> List[Dict]:
         """并发分析多篇论文"""
-        analyzed_papers = []
-
         logger.info(f"开始使用DeepSeek分析论文（并发数: {max_workers}）...")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -454,19 +467,21 @@ class DeepSeekAnalyzer:
                 for paper in papers
             }
 
-            # 收集结果
+            # 收集结果（保持原始顺序）
+            analyzed_papers = []
             for idx, future in enumerate(as_completed(future_to_paper), 1):
                 paper = future_to_paper[future]
                 try:
                     analysis = future.result()
-                    paper.update(analysis)
-                    analyzed_papers.append(paper)
+                    # 创建新字典而不是修改原字典，避免线程安全问题
+                    analyzed_paper = {**paper, **analysis}
+                    analyzed_papers.append(analyzed_paper)
                     logger.info(f"[{idx}/{len(papers)}] 完成分析: {paper['title'][:60]}...")
                 except Exception as e:
                     logger.error(f"并发分析出错: {paper['title'][:50]}... - {e}")
                     # 添加失败的默认结果
-                    paper.update(self._get_fallback_analysis(paper, str(e)))
-                    analyzed_papers.append(paper)
+                    analyzed_paper = {**paper, **self._get_fallback_analysis(paper, str(e))}
+                    analyzed_papers.append(analyzed_paper)
 
         return analyzed_papers
 
@@ -503,9 +518,11 @@ class ReportGenerator:
 
         for idx, paper in enumerate(sorted_papers, 1):
             # 处理作者列表
-            authors = paper.get('authors', [])[:max_authors]
-            if len(paper.get('authors', [])) > max_authors:
-                authors.append(f"等{len(paper['authors'])}人")
+            all_authors = paper.get('authors', [])
+            authors = all_authors[:max_authors]
+            if len(all_authors) > max_authors:
+                remaining = len(all_authors) - max_authors
+                authors.append(f"等{remaining}人")
 
             author_str = "、".join(authors)
 
@@ -515,8 +532,9 @@ class ReportGenerator:
                 try:
                     dt = datetime.fromisoformat(submitted_date.replace('Z', '+00:00'))
                     date_str = dt.strftime("%Y-%m-%d")
-                except:
-                    date_str = submitted_date[:10]
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"日期解析失败: {submitted_date} - {e}")
+                    date_str = submitted_date[:10] if len(submitted_date) >= 10 else submitted_date
             else:
                 date_str = "未知"
 
@@ -577,17 +595,52 @@ class ReportGenerator:
 
 def main():
     """主函数"""
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(
+        description='ArXiv cs.IR 论文抓取和分析工具',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例用法:
+  # 使用环境变量中的 API Key
+  python arxiv_fetcher.py
+
+  # 通过命令行传入 API Key
+  python arxiv_fetcher.py --api-key sk-xxx
+
+  # 使用自定义配置文件
+  python arxiv_fetcher.py --config my_config.yaml --api-key sk-xxx
+        """
+    )
+    parser.add_argument(
+        '--api-key',
+        type=str,
+        help='DeepSeek API Key（优先级高于环境变量和配置文件）'
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='config.yaml',
+        help='配置文件路径（默认: config.yaml）'
+    )
+
+    args = parser.parse_args()
+
+    # 如果通过命令行传入了 API Key，设置到环境变量中
+    if args.api_key:
+        os.environ['DEEPSEEK_API_KEY'] = args.api_key
+        logger.info("使用命令行传入的 API Key")
+
     logger.info("=" * 60)
     logger.info("ArXiv cs.IR 论文抓取和分析工具")
     logger.info("=" * 60)
 
     try:
         # 初始化
-        fetcher = ArxivFetcher()
+        fetcher = ArxivFetcher(args.config)
         analyzer = DeepSeekAnalyzer(fetcher.config)
         reporter = ReportGenerator(fetcher.config)
 
-        run_time = datetime.now()
+        run_time = datetime.now(timezone.utc)
 
         # 1. 获取论文
         papers = fetcher.fetch_papers()
