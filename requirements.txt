@@ -8,3 +8,6 @@ requests>=2.31.0
 
 # 自然语言处理（用于关键词词形还原）
 nltk>=3.8.1
+
+# Markdown到HTML转换（用于GitHub Pages）
+markdown>=3.4.0
