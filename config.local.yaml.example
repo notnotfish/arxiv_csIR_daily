@@ -1,0 +1,29 @@
+# 本地配置覆盖示例
+# 将此文件复制为 config.local.yaml 并填入真实配置
+# config.local.yaml 不会被提交到 Git
+
+# DeepSeek API配置（覆盖默认配置）
+deepseek:
+  # 方式1: 直接在这里设置API Key（不推荐，建议使用环境变量）
+  api_key: "your-deepseek-api-key-here"
+
+  # 方式2: 如果你想修改其他参数
+  # temperature: 0.5
+  # max_tokens: 3000
+  # max_retries: 5
+  # retry_delay: 3
+  # max_workers: 10  # 并发数
+
+# 关键词覆盖（可选，如果你想添加自己的关键词）
+# keywords:
+#   company:
+#     - bytedance
+#     - alibaba
+#   technical:
+#     - attention
+#     - transformer
+
+# 报告配置覆盖（可选）
+# report:
+#   top_n: 30
+#   max_authors: 6

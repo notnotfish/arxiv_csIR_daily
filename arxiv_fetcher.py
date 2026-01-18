@@ -6,20 +6,32 @@ ArXiv论文抓取和分析工具
 import os
 import re
 import yaml
+import json
+import time
+import logging
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from urllib.parse import unquote
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import nltk
     from nltk.stem import WordNetLemmatizer
+    from nltk.corpus import wordnet
     NLTK_AVAILABLE = True
 except ImportError:
     NLTK_AVAILABLE = False
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,6 +57,7 @@ class ArxivFetcher:
     def __init__(self, config_path: str = "config.yaml"):
         """初始化配置"""
         self.config = self._load_config(config_path)
+        self._validate_config()
         self.lemmatizer = None
         if self.config['matching'].get('use_lemmatization', True) and NLTK_AVAILABLE:
             self.lemmatizer = WordNetLemmatizer()
@@ -54,13 +67,81 @@ class ArxivFetcher:
             except LookupError:
                 try:
                     nltk.download('wordnet', quiet=True)
-                except:
-                    pass
+                    nltk.download('omw-1.4', quiet=True)  # 多语言WordNet
+                except Exception as e:
+                    logger.warning(f"下载NLTK数据失败: {e}")
 
     def _load_config(self, config_path: str) -> Dict:
-        """加载配置文件"""
+        """加载配置文件，支持本地覆盖和环境变量替换"""
+        # 加载主配置文件
         with open(config_path, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+
+        # 尝试加载本地覆盖配置
+        local_config_path = config_path.replace('.yaml', '.local.yaml')
+        if os.path.exists(local_config_path):
+            logger.info(f"检测到本地配置文件: {local_config_path}")
+            with open(local_config_path, 'r', encoding='utf-8') as f:
+                local_config = yaml.safe_load(f)
+                if local_config:
+                    self._deep_merge(config, local_config)
+
+        # 替换环境变量
+        config = self._replace_env_vars(config)
+
+        return config
+
+    def _deep_merge(self, base: Dict, override: Dict) -> None:
+        """深度合并字典"""
+        for key, value in override.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                self._deep_merge(base[key], value)
+            else:
+                base[key] = value
+
+    def _replace_env_vars(self, obj: Any) -> Any:
+        """递归替换配置中的环境变量"""
+        if isinstance(obj, dict):
+            return {k: self._replace_env_vars(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._replace_env_vars(item) for item in obj]
+        elif isinstance(obj, str):
+            # 匹配 ${VAR_NAME} 或 $VAR_NAME 格式
+            pattern = r'\$\{([^}]+)\}|\$([A-Z_][A-Z0-9_]*)'
+            def replace_match(match):
+                var_name = match.group(1) or match.group(2)
+                return os.environ.get(var_name, match.group(0))
+            return re.sub(pattern, replace_match, obj)
+        else:
+            return obj
+
+    def _validate_config(self) -> None:
+        """验证配置完整性"""
+        required_fields = {
+            'arxiv': ['base_url', 'category', 'max_results'],
+            'deepseek': ['api_key', 'base_url', 'model'],
+            'keywords': ['company', 'technical'],
+            'report': ['top_n', 'max_authors', 'output_dir']
+        }
+
+        for section, fields in required_fields.items():
+            if section not in self.config:
+                raise ValueError(f"配置缺少必要的section: {section}")
+            for field in fields:
+                if field not in self.config[section]:
+                    raise ValueError(f"配置缺少必要的字段: {section}.{field}")
+
+        # 验证 API Key
+        api_key = self.config['deepseek']['api_key']
+        if not api_key or api_key.startswith('$'):
+            raise ValueError(
+                "DeepSeek API Key 未设置！\n"
+                "请通过以下方式之一设置：\n"
+                "1. 设置环境变量: export DEEPSEEK_API_KEY='your-key'\n"
+                "2. 创建 config.local.yaml 并设置 deepseek.api_key"
+            )
+
+        logger.info("配置验证通过")
 
     def _get_keywords(self) -> List[str]:
         """获取所有关键词"""
@@ -69,19 +150,27 @@ class ArxivFetcher:
         keywords.extend(self.config['keywords'].get('technical', []))
         return keywords
 
+    def _get_wordnet_pos(self, word: str) -> str:
+        """根据词尾特征判断词性"""
+        # 简单的启发式规则
+        if word.endswith('ing') or word.endswith('ed') or word.endswith('ize'):
+            return wordnet.VERB
+        elif word.endswith('ly'):
+            return wordnet.ADV
+        else:
+            return wordnet.NOUN
+
     def _normalize_word(self, word: str) -> str:
         """标准化单词（小写、词形还原）"""
         word = word.lower()
-        if self.lemmatizer:
-            # 尝试词形还原
+        if self.lemmatizer and NLTK_AVAILABLE:
             try:
-                word = self.lemmatizer.lemmatize(word)
-                # 处理ing结尾的词
-                if word.endswith('ing'):
-                    base = word[:-3]
-                    word = self.lemmatizer.lemmatize(base)
-            except:
-                pass
+                # 尝试作为动词和名词还原，取最短的形式
+                noun_form = self.lemmatizer.lemmatize(word, pos=wordnet.NOUN)
+                verb_form = self.lemmatizer.lemmatize(word, pos=wordnet.VERB)
+                word = min([noun_form, verb_form], key=len)
+            except Exception as e:
+                logger.debug(f"词形还原失败 {word}: {e}")
         return word
 
     def _extract_keywords_from_text(self, text: str, keywords: List[str]) -> List[str]:
@@ -89,16 +178,32 @@ class ArxivFetcher:
         if not text:
             return []
 
-        # 合并标题和摘要进行分析
         content = text.lower()
         matched = []
 
         for keyword in keywords:
+            # 对关键词本身和其词形变化都进行匹配
             normalized_keyword = self._normalize_word(keyword)
-            # 使用单词边界匹配
-            pattern = r'\b' + re.escape(normalized_keyword) + r'(s|ing|ed)?\b'
-            if re.search(pattern, content):
-                matched.append(keyword)
+
+            # 构建更灵活的正则：匹配原词及其常见变形
+            # 例如：rank 会匹配 rank, ranks, ranking, ranked
+            variants = [
+                normalized_keyword,
+                normalized_keyword + 's',
+                normalized_keyword + 'ing',
+                normalized_keyword + 'ed',
+            ]
+
+            # 如果原关键词本身就包含词形变化，也加入匹配
+            if keyword.lower() != normalized_keyword:
+                variants.append(keyword.lower())
+
+            # 使用单词边界确保精确匹配
+            for variant in variants:
+                pattern = r'\b' + re.escape(variant) + r'\b'
+                if re.search(pattern, content):
+                    matched.append(keyword)
+                    break  # 找到一个变体就够了，避免重复
 
         return matched
 
@@ -126,8 +231,8 @@ class ArxivFetcher:
             f"max_results={max_results}"
         )
 
-        print(f"正在从ArXiv获取论文...")
-        print(f"时间范围: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
+        logger.info(f"正在从ArXiv获取论文...")
+        logger.info(f"时间范围: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
 
         response = requests.get(url, timeout=30)
         response.raise_for_status()
@@ -185,7 +290,7 @@ class ArxivFetcher:
                 'keyword_count': len(matched_keywords)
             })
 
-        print(f"获取到 {len(papers)} 篇论文")
+        logger.info(f"获取到 {len(papers)} 篇论文")
         return papers
 
     def rank_papers(self, papers: List[Dict]) -> List[Dict]:
@@ -209,9 +314,61 @@ class DeepSeekAnalyzer:
         self.api_key = self.config['api_key']
         self.base_url = self.config['base_url']
         self.model = self.config.get('model', 'deepseek-chat')
+        self.max_retries = self.config.get('max_retries', 3)
+        self.retry_delay = self.config.get('retry_delay', 2)
+
+    def _extract_json_from_text(self, text: str) -> Dict:
+        """从文本中提取JSON，处理各种格式"""
+        text = text.strip()
+
+        # 移除markdown代码块
+        if '```' in text:
+            # 提取代码块内容
+            parts = text.split('```')
+            for i, part in enumerate(parts):
+                if i % 2 == 1:  # 代码块内容在奇数位置
+                    # 移除可能的语言标识符（如 json）
+                    lines = part.strip().split('\n')
+                    if lines[0].strip().lower() in ['json', 'jsonc']:
+                        part = '\n'.join(lines[1:])
+                    text = part.strip()
+                    break
+
+        # 尝试直接解析
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试提取JSON对象（查找最外层的花括号）
+        match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # 如果都失败了，抛出异常
+        raise ValueError(f"无法从文本中提取有效的JSON: {text[:100]}...")
 
     def analyze_paper(self, paper: Dict, keywords: List[str]) -> Dict:
-        """分析单篇论文"""
+        """分析单篇论文（带重试）"""
+        for attempt in range(self.max_retries):
+            try:
+                return self._analyze_paper_once(paper, keywords)
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"分析论文失败 (尝试 {attempt + 1}/{self.max_retries}): "
+                        f"{paper['title'][:50]}... - {str(e)}"
+                    )
+                    time.sleep(self.retry_delay * (attempt + 1))  # 指数退避
+                else:
+                    logger.error(f"分析论文最终失败: {paper['title'][:50]}... - {str(e)}")
+                    return self._get_fallback_analysis(paper, str(e))
+
+    def _analyze_paper_once(self, paper: Dict, keywords: List[str]) -> Dict:
+        """分析单篇论文（单次尝试）"""
         title = paper['title']
         abstract = paper['abstract']
         keyword_str = ', '.join(paper['matched_keywords'])
@@ -243,48 +400,75 @@ class DeepSeekAnalyzer:
 - 1分：与推荐系统基本无关
 """
 
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": self.config.get('temperature', 0.3),
-                    "max_tokens": self.config.get('max_tokens', 2000)
-                },
-                timeout=30
-            )
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": self.config.get('temperature', 0.3),
+                "max_tokens": self.config.get('max_tokens', 2000)
+            },
+            timeout=30
+        )
 
-            response.raise_for_status()
-            result = response.json()
+        response.raise_for_status()
+        result = response.json()
 
-            content = result['choices'][0]['message']['content'].strip()
+        content = result['choices'][0]['message']['content'].strip()
 
-            # 尝试解析JSON
-            import json
-            # 移除可能的markdown代码块标记
-            if content.startswith('```'):
-                content = content.split('```')[1]
-                if content.startswith('json'):
-                    content = content[4:]
-                content = content.strip()
+        # 使用改进的JSON提取方法
+        analysis = self._extract_json_from_text(content)
 
-            analysis = json.loads(content)
-            return analysis
+        # 验证必要字段
+        required_fields = ['translated_title', 'company', 'summary', 'interest_score', 'interest_reason']
+        for field in required_fields:
+            if field not in analysis:
+                raise ValueError(f"API返回的JSON缺少字段: {field}")
 
-        except Exception as e:
-            print(f"分析论文时出错: {title[:50]}... - {str(e)}")
-            return {
-                'translated_title': f"[翻译失败] {title}",
-                'company': '未知',
-                'summary': f"摘要生成失败: {str(e)}",
-                'interest_score': 1,
-                'interest_reason': 'API调用失败'
+        return analysis
+
+    def _get_fallback_analysis(self, paper: Dict, error_msg: str) -> Dict:
+        """返回失败时的默认分析结果"""
+        return {
+            'translated_title': f"[翻译失败] {paper['title']}",
+            'company': '未知',
+            'summary': f"摘要生成失败: {error_msg}",
+            'interest_score': 1,
+            'interest_reason': 'API调用失败'
+        }
+
+    def analyze_papers_concurrent(self, papers: List[Dict], keywords: List[str], max_workers: int = 5) -> List[Dict]:
+        """并发分析多篇论文"""
+        analyzed_papers = []
+
+        logger.info(f"开始使用DeepSeek分析论文（并发数: {max_workers}）...")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_paper = {
+                executor.submit(self.analyze_paper, paper, keywords): paper
+                for paper in papers
             }
+
+            # 收集结果
+            for idx, future in enumerate(as_completed(future_to_paper), 1):
+                paper = future_to_paper[future]
+                try:
+                    analysis = future.result()
+                    paper.update(analysis)
+                    analyzed_papers.append(paper)
+                    logger.info(f"[{idx}/{len(papers)}] 完成分析: {paper['title'][:60]}...")
+                except Exception as e:
+                    logger.error(f"并发分析出错: {paper['title'][:50]}... - {e}")
+                    # 添加失败的默认结果
+                    paper.update(self._get_fallback_analysis(paper, str(e)))
+                    analyzed_papers.append(paper)
+
+        return analyzed_papers
 
 
 class ReportGenerator:
@@ -387,56 +571,53 @@ class ReportGenerator:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
 
-        print(f"报告已保存到: {filepath}")
+        logger.info(f"报告已保存到: {filepath}")
         return str(filepath)
 
 
 def main():
     """主函数"""
-    print("=" * 60)
-    print("ArXiv cs.IR 论文抓取和分析工具")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("ArXiv cs.IR 论文抓取和分析工具")
+    logger.info("=" * 60)
 
-    # 初始化
-    fetcher = ArxivFetcher()
-    analyzer = DeepSeekAnalyzer(fetcher.config)
-    reporter = ReportGenerator(fetcher.config)
+    try:
+        # 初始化
+        fetcher = ArxivFetcher()
+        analyzer = DeepSeekAnalyzer(fetcher.config)
+        reporter = ReportGenerator(fetcher.config)
 
-    run_time = datetime.now()
+        run_time = datetime.now()
 
-    # 1. 获取论文
-    papers = fetcher.fetch_papers()
-    if not papers:
-        print("未获取到论文，程序退出")
-        return
+        # 1. 获取论文
+        papers = fetcher.fetch_papers()
+        if not papers:
+            logger.warning("未获取到论文，程序退出")
+            return
 
-    # 2. 排序并取top N
-    top_papers = fetcher.rank_papers(papers)
-    print(f"按关键词排序后，选取Top {len(top_papers)} 篇论文")
+        # 2. 排序并取top N
+        top_papers = fetcher.rank_papers(papers)
+        logger.info(f"按关键词排序后，选取Top {len(top_papers)} 篇论文")
 
-    # 3. 使用DeepSeek分析每篇论文
-    keywords = fetcher._get_keywords()
-    analyzed_papers = []
+        # 3. 使用DeepSeek并发分析论文
+        keywords = fetcher._get_keywords()
+        max_workers = fetcher.config.get('deepseek', {}).get('max_workers', 5)
+        analyzed_papers = analyzer.analyze_papers_concurrent(top_papers, keywords, max_workers)
 
-    print(f"\n开始使用DeepSeek分析论文...")
-    for idx, paper in enumerate(top_papers, 1):
-        print(f"[{idx}/{len(top_papers)}] 正在分析: {paper['title'][:60]}...")
-        analysis = analyzer.analyze_paper(paper, keywords)
+        # 4. 生成报告
+        logger.info("生成报告...")
+        report_content = reporter.generate(analyzed_papers, run_time)
 
-        # 合并数据
-        paper.update(analysis)
-        analyzed_papers.append(paper)
+        # 5. 保存报告
+        reporter.save_report(report_content, run_time)
 
-    # 4. 生成报告
-    print(f"\n生成报告...")
-    report_content = reporter.generate(analyzed_papers, run_time)
+        logger.info("=" * 60)
+        logger.info("完成！")
+        logger.info("=" * 60)
 
-    # 5. 保存报告
-    reporter.save_report(report_content, run_time)
-
-    print("\n" + "=" * 60)
-    print("完成！")
-    print("=" * 60)
+    except Exception as e:
+        logger.error(f"程序执行出错: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":

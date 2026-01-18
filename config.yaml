@@ -9,12 +9,18 @@ arxiv:
 
 # DeepSeek API配置
 deepseek:
-  api_key: "sk-6681ff74588a4d8f8f6f9d28c7d32b50"
+  # API Key 从环境变量 DEEPSEEK_API_KEY 读取，或在 config.local.yaml 中设置
+  api_key: "${DEEPSEEK_API_KEY}"
   base_url: "https://api.deepseek.com/v1"
   model: "deepseek-chat"
   # 可选的请求参数
   temperature: 0.3
   max_tokens: 2000
+  # 重试配置
+  max_retries: 3  # API调用失败时的最大重试次数
+  retry_delay: 2  # 重试间隔（秒）
+  # 并发配置
+  max_workers: 5  # 并发分析论文的线程数
 
 # 关键词配置
 keywords:
